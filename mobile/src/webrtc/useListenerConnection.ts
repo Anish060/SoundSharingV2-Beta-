@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ConvexClient } from "convex/browser";
+import { ConvexHttpClient } from "convex/browser";
 import {
   RTCPeerConnection,
   RTCIceCandidate,
@@ -31,23 +31,24 @@ interface Result {
 }
 
 /**
- * Establishes a Convex Cloud signaling channel + WebRTC audio-receive connection to the host.
+ * Establishes a Convex Cloud HTTP signaling channel + WebRTC audio-receive connection to the host.
  */
 export function useListenerConnection(opts: Options): Result {
   const [state, setState] = useState<ConnectionState>("idle");
   const [error, setError] = useState<string | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
-  const clientRef = useRef<ConvexClient | null>(null);
+  const clientRef = useRef<ConvexHttpClient | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    let pollInterval: ReturnType<typeof setInterval> | null = null;
 
     (async () => {
       setState("connecting");
       if (cancelled) return;
 
       const convexUrl = opts.qr.convexUrl || PRODUCTION_CONVEX_URL;
-      const client = new ConvexClient(convexUrl);
+      const client = new ConvexHttpClient(convexUrl);
       clientRef.current = client;
 
       try {
@@ -109,11 +110,11 @@ export function useListenerConnection(opts: Options): Result {
           }
         });
 
-        // Subscribe to signals targeted to this listener
-        const unsubscribe = client.onUpdate(
-          api.signaling.getIncomingSignals,
-          { target: listenerId },
-          async (signals) => {
+        // Poll incoming signals via Convex HTTP API
+        pollInterval = setInterval(async () => {
+          if (cancelled) return;
+          try {
+            const signals = await client.query(api.signaling.getIncomingSignals, { target: listenerId });
             for (const sig of signals) {
               if (sig.type === "offer") {
                 console.log(`[useListenerConnection] Received WebRTC offer from host`);
@@ -143,15 +144,13 @@ export function useListenerConnection(opts: Options): Result {
                 }
               }
 
-              // Delete processed signal
               await client.mutation(api.signaling.clearSignal, { id: sig._id });
             }
+          } catch (pollErr) {
+            console.warn("[useListenerConnection] Signal poll error:", pollErr);
           }
-        );
+        }, 1000);
 
-        return () => {
-          unsubscribe();
-        };
       } catch (err) {
         if (!cancelled) {
           console.error(`[useListenerConnection] Setup error:`, err);
@@ -163,16 +162,14 @@ export function useListenerConnection(opts: Options): Result {
 
     return () => {
       cancelled = true;
+      if (pollInterval) clearInterval(pollInterval);
       peerRef.current?.close();
       peerRef.current = null;
-      clientRef.current?.close();
-      clientRef.current = null;
     };
   }, [opts.qr, opts.passcode, opts.listenerName]);
 
   const close = (): void => {
     peerRef.current?.close();
-    clientRef.current?.close();
   };
 
   return { state, error, close };

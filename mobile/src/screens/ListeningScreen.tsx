@@ -30,7 +30,7 @@ export function ListeningScreen({ qr, passcode, listenerName, onLeave }: Props):
     <View style={styles.container}>
       <Text style={styles.status}>{describeState(displayState)}</Text>
       <Text style={styles.meta}>Session {qr.code}</Text>
-      <Text style={styles.meta}>Host {qr.ip}:{qr.port}</Text>
+      <Text style={styles.meta}>Signaling Cloud: Convex</Text>
       {error && <Text style={styles.error}>{error}</Text>}
       <TouchableOpacity style={styles.leave} onPress={handleLeave}>
         <Text style={styles.leaveText}>Leave</Text>
