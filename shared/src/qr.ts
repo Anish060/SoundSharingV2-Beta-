@@ -7,6 +7,7 @@ export interface QrPayloadV1 {
   code: string;
   protocol: "ws" | "wss";
   requiresPasscode: boolean;
+  convexUrl?: string;
 }
 
 export type QrPayload = QrPayloadV1;
@@ -51,5 +52,6 @@ export function decodeQr(raw: string): QrPayload {
     code: obj.code,
     protocol: obj.protocol,
     requiresPasscode: obj.requiresPasscode,
+    convexUrl: typeof obj.convexUrl === "string" ? obj.convexUrl : undefined,
   };
 }

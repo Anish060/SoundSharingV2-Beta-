@@ -93,7 +93,13 @@ export function HostSessionView({ hostName }: Props): JSX.Element {
 
       // 1. Create peer connection
       console.log(`[HostSessionView] Creating RTCPeerConnection for listener ${payload.socketId}`);
-      const pc = new RTCPeerConnection({ iceServers: [] });
+      const pc = new RTCPeerConnection({
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun1.l.google.com:19302" },
+          { urls: "stun:stun2.l.google.com:19302" },
+        ],
+      });
       peerConnectionsRef.current.set(payload.socketId, pc);
 
       pc.onconnectionstatechange = () => {
@@ -250,6 +256,7 @@ export function HostSessionView({ hostName }: Props): JSX.Element {
       code: sessionCode,
       protocol: "ws",
       requiresPasscode: true,
+      convexUrl: "https://elated-scorpion-697.convex.cloud",
     };
   }, [sidecar, sessionCode, activeIp]);
 
