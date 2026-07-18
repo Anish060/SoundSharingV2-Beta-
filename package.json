@@ -12,7 +12,6 @@
     "dev:backend": "pnpm --filter @sshare/backend dev",
     "dev:desktop": "pnpm --filter @sshare/desktop tauri:dev",
     "dev:mobile": "pnpm --filter @sshare/mobile start",
-    "build:desktop": "pnpm --filter @sshare/desktop tauri:build",
     "mobile:build": "pnpm --filter @sshare/mobile eas:build:dev",
     "build": "pnpm -r build",
     "test": "pnpm -r test",

@@ -1,6 +1,3 @@
-import { ConvexClient } from "convex/browser";
-import { api, PRODUCTION_CONVEX_URL } from "./convexSignaling";
-
 export interface SidecarInfo {
   ip: string;
   port: number;
@@ -8,7 +5,6 @@ export interface SidecarInfo {
   hostSocketId: string;
   socket: any;
   ips?: string[];
-  convexClient?: ConvexClient;
 }
 
 export interface StartSidecarOptions {
@@ -17,46 +13,32 @@ export interface StartSidecarOptions {
 }
 
 /**
- * Tries local Socket.IO server first (fastest local Wi-Fi streaming),
- * falling back to Convex Cloud.
+ * Spawns the bundled Node signaling sidecar via Tauri, then calls `create-session`
+ * on it and returns the session details. Falls back to a local dev server on port
+ * 3000 when running under `vite` without Tauri (developer flow).
  */
 export async function startSignalingSidecar(opts: StartSidecarOptions): Promise<SidecarInfo> {
-  const devPort = 3000;
-  const devIp = "127.0.0.1";
-
-  // 1. Try connecting to local Socket.IO backend on port 3000 first
-  try {
-    const { socket, ...result } = await createSessionOnServer(devIp, devPort, opts);
-    const ip = result.ips?.[0] ?? devIp;
-    return {
-      ip,
-      port: devPort,
-      sessionCode: result.sessionCode,
-      hostSocketId: result.hostSocketId,
-      socket,
-      ips: result.ips ?? [devIp],
-    };
-  } catch {
-    console.log("Local backend port 3000 not found; using Convex Cloud fallback...");
+  if (isTauri()) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const started = (await invoke("spawn_signaling_sidecar")) as { ip: string; port: number };
+      const { socket, ...result } = await createSessionOnServer(started.ip, started.port, opts);
+      const ip = result.ips?.[0] ?? started.ip;
+      return { ip, port: started.port, sessionCode: result.sessionCode, hostSocketId: result.hostSocketId, socket, ips: result.ips };
+    } catch (err) {
+      console.warn("Tauri sidecar spawn failed; falling back to standalone backend on port 3000:", err);
+    }
   }
 
-  // 2. Fallback to Convex Cloud
-  const client = new ConvexClient(PRODUCTION_CONVEX_URL);
-  const hostSocketId = "host_" + Math.random().toString(36).substring(2, 9);
-  const result = await client.mutation(api.signaling.createSession, {
-    hostName: opts.hostName,
-    passcode: opts.passcode,
-  });
+  const devPort = 3000;
+  const devIp = "127.0.0.1";
+  const { socket, ...result } = await createSessionOnServer(devIp, devPort, opts);
+  const ip = result.ips?.[0] ?? devIp;
+  return { ip, port: devPort, sessionCode: result.sessionCode, hostSocketId: result.hostSocketId, socket, ips: result.ips };
+}
 
-  return {
-    ip: devIp,
-    port: devPort,
-    sessionCode: result.code,
-    hostSocketId,
-    socket: null,
-    ips: [devIp],
-    convexClient: client,
-  };
+function isTauri(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
 async function createSessionOnServer(

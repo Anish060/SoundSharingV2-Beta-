@@ -1,8 +1,8 @@
 use crate::SidecarStarted;
 use tauri::AppHandle;
+use tauri_plugin_shell::ShellExt;
 use thiserror::Error;
 
-#[allow(dead_code)]
 #[derive(Debug, Error)]
 pub enum SidecarError {
     #[error("failed to spawn sidecar: {0}")]
@@ -11,9 +11,24 @@ pub enum SidecarError {
     Network(String),
 }
 
-pub async fn spawn(_app: &AppHandle) -> Result<SidecarStarted, SidecarError> {
+pub async fn spawn(app: &AppHandle) -> Result<SidecarStarted, SidecarError> {
     let port = 3000u16;
-    let ip = pick_local_ip().unwrap_or_else(|| "127.0.0.1".to_string());
+
+    // Sidecar binary lives under `binaries/sshare-signaling(-<triple>)` and is
+    // registered as an externalBin in tauri.conf.json. If it hasn't been built
+    // yet, `sidecar()` will return an error at runtime.
+    let cmd = app
+        .shell()
+        .sidecar("sshare-signaling")
+        .map_err(|e| SidecarError::Spawn(e.to_string()))?;
+
+    let (_rx, _child) = cmd
+        .env("PORT", port.to_string())
+        .env("HOST", "0.0.0.0")
+        .spawn()
+        .map_err(|e| SidecarError::Spawn(e.to_string()))?;
+
+    let ip = pick_local_ip().ok_or_else(|| SidecarError::Network("no LAN interface found".into()))?;
     Ok(SidecarStarted { ip, port })
 }
 
