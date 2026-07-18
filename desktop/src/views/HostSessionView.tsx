@@ -78,117 +78,214 @@ export function HostSessionView({ hostName }: Props): JSX.Element {
     };
   }, [hostName, passcode]);
 
-  // Setup Convex Cloud signaling listeners once sidecar is initialized
+  // Setup Socket.IO or Convex Cloud signaling listeners once sidecar is initialized
   useEffect(() => {
-    if (!sidecar || !sidecar.convexClient) return;
+    if (!sidecar) return;
 
-    const client = sidecar.convexClient;
-    const targetId = "host_" + sidecar.sessionCode;
+    if (sidecar.socket) {
+      const sock = sidecar.socket;
 
-    const handleListenerJoined = async (listenerId: string, listenerName: string) => {
-      if (peerConnectionsRef.current.has(listenerId)) return;
+      sock.on("listener-joined", async (payload: { socketId: string; listenerName: string }) => {
+        console.log(`[HostSessionView] Listener joined via Socket.IO: ${payload.listenerName} (${payload.socketId})`);
+        setListeners((prev) => {
+          const next = new Map(prev);
+          next.set(payload.socketId, payload.listenerName);
+          return next;
+        });
 
-      console.log(`[HostSessionView] Listener joined over Convex Cloud: ${listenerName} (${listenerId})`);
-      setListeners((prev) => {
-        const next = new Map(prev);
-        next.set(listenerId, listenerName);
-        return next;
+        const pc = new RTCPeerConnection({
+          iceServers: [
+            { urls: "stun:stun.l.google.com:19302" },
+            { urls: "stun:stun1.l.google.com:19302" },
+            { urls: "stun:stun2.l.google.com:19302" },
+          ],
+        });
+        peerConnectionsRef.current.set(payload.socketId, pc);
+
+        const transceiver = pc.addTransceiver("audio", { direction: "sendonly" });
+        const currentTrack = audioTrackRef.current;
+        if (currentTrack) {
+          await transceiver.sender.replaceTrack(currentTrack);
+        }
+
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            const candidateJson = event.candidate.toJSON();
+            const currentIp = activeIpRef.current;
+            if (currentIp && candidateJson.candidate) {
+              candidateJson.candidate = rewriteCandidate(candidateJson.candidate, currentIp);
+            }
+            sock.emit("ice-candidate", {
+              target: payload.socketId,
+              candidate: candidateJson,
+            });
+          }
+        };
+
+        try {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          const currentIp = activeIpRef.current;
+          const sdp = currentIp ? rewriteSdp(offer.sdp || "", currentIp) : offer.sdp;
+          sock.emit("webrtc-offer", {
+            target: payload.socketId,
+            sdp: { type: offer.type, sdp },
+          });
+        } catch (err) {
+          console.error(`[HostSessionView] Failed offer creation:`, err);
+        }
       });
 
-      const pc = new RTCPeerConnection({
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" },
-          { urls: "stun:stun1.l.google.com:19302" },
-          { urls: "stun:stun2.l.google.com:19302" },
-        ],
+      sock.on("webrtc-answer", async (payload: { from: string; sdp: any }) => {
+        const pc = peerConnectionsRef.current.get(payload.from);
+        if (pc) {
+          try {
+            await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+          } catch (err) {
+            console.error(`[HostSessionView] Failed remote answer:`, err);
+          }
+        }
       });
-      peerConnectionsRef.current.set(listenerId, pc);
 
-      pc.onconnectionstatechange = () => {
-        console.log(`[HostSessionView] WebRTC connectionState for ${listenerId} changed to: ${pc.connectionState}`);
+      sock.on("ice-candidate", async (payload: { from: string; candidate: any }) => {
+        const pc = peerConnectionsRef.current.get(payload.from);
+        if (pc) {
+          try {
+            await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
+          } catch (err) {
+            console.warn(`[HostSessionView] Failed ICE candidate:`, err);
+          }
+        }
+      });
+
+      sock.on("listener-left", (payload: { socketId: string }) => {
+        setListeners((prev) => {
+          const next = new Map(prev);
+          next.delete(payload.socketId);
+          return next;
+        });
+        const pc = peerConnectionsRef.current.get(payload.socketId);
+        if (pc) {
+          pc.close();
+          peerConnectionsRef.current.delete(payload.socketId);
+        }
+      });
+
+      return () => {
+        sock.off("listener-joined");
+        sock.off("webrtc-answer");
+        sock.off("ice-candidate");
+        sock.off("listener-left");
+        peerConnectionsRef.current.forEach((pc) => pc.close());
+        peerConnectionsRef.current.clear();
       };
+    }
 
-      const transceiver = pc.addTransceiver("audio", { direction: "sendonly" });
-      const currentTrack = audioTrackRef.current;
-      if (currentTrack) {
-        await transceiver.sender.replaceTrack(currentTrack);
-      }
+    if (sidecar.convexClient) {
+      const client = sidecar.convexClient;
+      const targetId = "host_" + sidecar.sessionCode;
 
-      pc.onicecandidate = async (event) => {
-        if (event.candidate) {
+      const handleListenerJoined = async (listenerId: string, listenerName: string) => {
+        if (peerConnectionsRef.current.has(listenerId)) return;
+
+        console.log(`[HostSessionView] Listener joined over Convex Cloud: ${listenerName} (${listenerId})`);
+        setListeners((prev) => {
+          const next = new Map(prev);
+          next.set(listenerId, listenerName);
+          return next;
+        });
+
+        const pc = new RTCPeerConnection({
+          iceServers: [
+            { urls: "stun:stun.l.google.com:19302" },
+            { urls: "stun:stun1.l.google.com:19302" },
+            { urls: "stun:stun2.l.google.com:19302" },
+          ],
+        });
+        peerConnectionsRef.current.set(listenerId, pc);
+
+        const transceiver = pc.addTransceiver("audio", { direction: "sendonly" });
+        const currentTrack = audioTrackRef.current;
+        if (currentTrack) {
+          await transceiver.sender.replaceTrack(currentTrack);
+        }
+
+        pc.onicecandidate = async (event) => {
+          if (event.candidate) {
+            await client.mutation(api.signaling.sendSignal, {
+              sessionCode: sidecar.sessionCode,
+              target: listenerId,
+              from: targetId,
+              type: "ice",
+              payload: JSON.stringify(event.candidate.toJSON()),
+            });
+          }
+        };
+
+        try {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+
           await client.mutation(api.signaling.sendSignal, {
             sessionCode: sidecar.sessionCode,
             target: listenerId,
             from: targetId,
-            type: "ice",
-            payload: JSON.stringify(event.candidate.toJSON()),
+            type: "offer",
+            payload: JSON.stringify({ type: offer.type, sdp: offer.sdp }),
           });
+        } catch (err) {
+          console.error(`[HostSessionView] Failed offer creation:`, err);
         }
       };
 
-      try {
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-
-        await client.mutation(api.signaling.sendSignal, {
-          sessionCode: sidecar.sessionCode,
-          target: listenerId,
-          from: targetId,
-          type: "offer",
-          payload: JSON.stringify({ type: offer.type, sdp: offer.sdp }),
-        });
-      } catch (err) {
-        console.error(`[HostSessionView] Failed to create offer for ${listenerId}:`, err);
-      }
-    };
-
-    const unsubscribe = client.onUpdate(
-      api.signaling.getIncomingSignals,
-      { target: targetId },
-      async (signals) => {
-        for (const sig of signals) {
-          if (sig.type === "join" || sig.type === "ice") {
-            if (sig.from && !peerConnectionsRef.current.has(sig.from)) {
-              let listenerName = "Listener (" + sig.from.slice(0, 4) + ")";
-              try {
-                const parsed = JSON.parse(sig.payload);
-                if (parsed.name) listenerName = parsed.name;
-              } catch {}
-              await handleListenerJoined(sig.from, listenerName);
-            }
-            if (sig.type === "ice") {
+      const unsubscribe = client.onUpdate(
+        api.signaling.getIncomingSignals,
+        { target: targetId },
+        async (signals) => {
+          for (const sig of signals) {
+            if (sig.type === "join" || sig.type === "ice") {
+              if (sig.from && !peerConnectionsRef.current.has(sig.from)) {
+                let listenerName = "Listener (" + sig.from.slice(0, 4) + ")";
+                try {
+                  const parsed = JSON.parse(sig.payload);
+                  if (parsed.name) listenerName = parsed.name;
+                } catch {}
+                await handleListenerJoined(sig.from, listenerName);
+              }
+              if (sig.type === "ice") {
+                const pc = peerConnectionsRef.current.get(sig.from);
+                if (pc) {
+                  try {
+                    const candidate = JSON.parse(sig.payload);
+                    await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                  } catch (err) {
+                    console.warn("[HostSessionView] Failed ICE candidate:", err);
+                  }
+                }
+              }
+            } else if (sig.type === "answer") {
               const pc = peerConnectionsRef.current.get(sig.from);
               if (pc) {
                 try {
-                  const candidate = JSON.parse(sig.payload);
-                  await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                  const answer = JSON.parse(sig.payload);
+                  await pc.setRemoteDescription(new RTCSessionDescription(answer));
                 } catch (err) {
-                  console.warn("[HostSessionView] Failed adding ICE candidate:", err);
+                  console.warn("[HostSessionView] Failed remote answer:", err);
                 }
               }
             }
-          } else if (sig.type === "answer") {
-            const pc = peerConnectionsRef.current.get(sig.from);
-            if (pc) {
-              try {
-                const answer = JSON.parse(sig.payload);
-                await pc.setRemoteDescription(new RTCSessionDescription(answer));
-              } catch (err) {
-                console.warn("[HostSessionView] Failed setting remote answer:", err);
-              }
-            }
+
+            await client.mutation(api.signaling.clearSignal, { id: sig._id });
           }
-
-          await client.mutation(api.signaling.clearSignal, { id: sig._id });
         }
-      }
-    );
+      );
 
-    return () => {
-      unsubscribe();
-      peerConnectionsRef.current.forEach((pc) => pc.close());
-      peerConnectionsRef.current.clear();
-    };
+      return () => {
+        unsubscribe();
+        peerConnectionsRef.current.forEach((pc) => pc.close());
+        peerConnectionsRef.current.clear();
+      };
+    }
   }, [sidecar]);
 
   // Handle hot-swapping or toggling of audio tracks across all active listeners
