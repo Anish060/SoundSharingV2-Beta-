@@ -116,17 +116,12 @@ export function HostSessionView({ hostName }: Props): JSX.Element {
 
       pc.onicecandidate = async (event) => {
         if (event.candidate) {
-          const candidateJson = event.candidate.toJSON();
-          const currentIp = activeIpRef.current;
-          if (currentIp && candidateJson.candidate) {
-            candidateJson.candidate = rewriteCandidate(candidateJson.candidate, currentIp);
-          }
           await client.mutation(api.signaling.sendSignal, {
             sessionCode: sidecar.sessionCode,
             target: listenerId,
             from: targetId,
             type: "ice",
-            payload: JSON.stringify(candidateJson),
+            payload: JSON.stringify(event.candidate.toJSON()),
           });
         }
       };
@@ -134,15 +129,13 @@ export function HostSessionView({ hostName }: Props): JSX.Element {
       try {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-        const currentIp = activeIpRef.current;
-        const sdp = currentIp ? rewriteSdp(offer.sdp || "", currentIp) : offer.sdp;
 
         await client.mutation(api.signaling.sendSignal, {
           sessionCode: sidecar.sessionCode,
           target: listenerId,
           from: targetId,
           type: "offer",
-          payload: JSON.stringify({ type: offer.type, sdp }),
+          payload: JSON.stringify({ type: offer.type, sdp: offer.sdp }),
         });
       } catch (err) {
         console.error(`[HostSessionView] Failed to create offer for ${listenerId}:`, err);
