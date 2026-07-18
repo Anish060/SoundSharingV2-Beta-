@@ -20,5 +20,8 @@
   },
   "devDependencies": {
     "typescript": "^5.5.4"
+  },
+  "dependencies": {
+    "convex": "^1.42.3"
   }
 }
