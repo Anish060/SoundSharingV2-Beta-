@@ -3,6 +3,7 @@ import QRCode from "qrcode";
 import { encodeQr, type QrPayload } from "@sshare/shared";
 import { startSignalingSidecar, type SidecarInfo } from "../sidecar.js";
 import { useHostAudio } from "../useHostAudio.js";
+import { api } from "../convexSignaling.js";
 
 interface Props {
   hostName: string;
@@ -77,22 +78,23 @@ export function HostSessionView({ hostName }: Props): JSX.Element {
     };
   }, [hostName, passcode]);
 
-  // Setup Socket.IO listeners once sidecar socket is available
+  // Setup Convex Cloud signaling listeners once sidecar is initialized
   useEffect(() => {
-    if (!sidecar || !sidecar.socket) return;
+    if (!sidecar || !sidecar.convexClient) return;
 
-    const sock = sidecar.socket;
+    const client = sidecar.convexClient;
+    const targetId = "host_" + sidecar.sessionCode;
 
-    sock.on("listener-joined", async (payload: { socketId: string; listenerName: string }) => {
-      console.log(`[HostSessionView] Listener joined: ${payload.listenerName} (${payload.socketId})`);
+    const handleListenerJoined = async (listenerId: string, listenerName: string) => {
+      if (peerConnectionsRef.current.has(listenerId)) return;
+
+      console.log(`[HostSessionView] Listener joined over Convex Cloud: ${listenerName} (${listenerId})`);
       setListeners((prev) => {
         const next = new Map(prev);
-        next.set(payload.socketId, payload.listenerName);
+        next.set(listenerId, listenerName);
         return next;
       });
 
-      // 1. Create peer connection
-      console.log(`[HostSessionView] Creating RTCPeerConnection for listener ${payload.socketId}`);
       const pc = new RTCPeerConnection({
         iceServers: [
           { urls: "stun:stun.l.google.com:19302" },
@@ -100,122 +102,92 @@ export function HostSessionView({ hostName }: Props): JSX.Element {
           { urls: "stun:stun2.l.google.com:19302" },
         ],
       });
-      peerConnectionsRef.current.set(payload.socketId, pc);
+      peerConnectionsRef.current.set(listenerId, pc);
 
       pc.onconnectionstatechange = () => {
-        console.log(`[HostSessionView] WebRTC connectionState for ${payload.socketId} (${payload.listenerName}) changed to: ${pc.connectionState}`);
+        console.log(`[HostSessionView] WebRTC connectionState for ${listenerId} changed to: ${pc.connectionState}`);
       };
 
-      pc.oniceconnectionstatechange = () => {
-        console.log(`[HostSessionView] WebRTC iceConnectionState for ${payload.socketId} (${payload.listenerName}) changed to: ${pc.iceConnectionState}`);
-      };
-
-      pc.onicegatheringstatechange = () => {
-        console.log(`[HostSessionView] WebRTC iceGatheringState for ${payload.socketId} (${payload.listenerName}) changed to: ${pc.iceGatheringState}`);
-      };
-
-      // 2. Reserve an audio transceiver so the offer always has an m=audio
-      // section, even when capture hasn't started yet. The hot-swap effect
-      // below will attach the real track via sender.replaceTrack when it
-      // becomes available.
       const transceiver = pc.addTransceiver("audio", { direction: "sendonly" });
       const currentTrack = audioTrackRef.current;
       if (currentTrack) {
-        console.log(`[HostSessionView] Attaching active audio track to transceiver for listener ${payload.socketId}`);
         await transceiver.sender.replaceTrack(currentTrack);
-      } else {
-        console.log(`[HostSessionView] Listener ${payload.socketId} joined before capture started; sending offer with muted transceiver`);
       }
 
-      // 3. ICE Candidate callback
-      pc.onicecandidate = (event) => {
+      pc.onicecandidate = async (event) => {
         if (event.candidate) {
           const candidateJson = event.candidate.toJSON();
           const currentIp = activeIpRef.current;
           if (currentIp && candidateJson.candidate) {
-            const original = candidateJson.candidate;
             candidateJson.candidate = rewriteCandidate(candidateJson.candidate, currentIp);
-            console.log(`[HostSessionView] Trickled candidate for listener ${payload.socketId}. Original: "${original}", Rewritten: "${candidateJson.candidate}"`);
-          } else {
-            console.log(`[HostSessionView] Trickled candidate for listener ${payload.socketId}:`, candidateJson.candidate);
           }
-          sock.emit("ice-candidate", {
-            target: payload.socketId,
-            candidate: candidateJson,
+          await client.mutation(api.signaling.sendSignal, {
+            sessionCode: sidecar.sessionCode,
+            target: listenerId,
+            from: targetId,
+            type: "ice",
+            payload: JSON.stringify(candidateJson),
           });
         }
       };
 
-      // 4. Create offer
       try {
-        console.log(`[HostSessionView] Creating SDP offer for listener ${payload.socketId}...`);
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         const currentIp = activeIpRef.current;
         const sdp = currentIp ? rewriteSdp(offer.sdp || "", currentIp) : offer.sdp;
-        console.log(`[HostSessionView] Sending WebRTC offer to listener ${payload.socketId}. Custom SDP:\n${sdp}`);
-        sock.emit("webrtc-offer", {
-          target: payload.socketId,
-          sdp: { type: offer.type, sdp },
+
+        await client.mutation(api.signaling.sendSignal, {
+          sessionCode: sidecar.sessionCode,
+          target: listenerId,
+          from: targetId,
+          type: "offer",
+          payload: JSON.stringify({ type: offer.type, sdp }),
         });
       } catch (err) {
-        console.error(`[HostSessionView] Failed to create WebRTC offer for ${payload.socketId}:`, err);
+        console.error(`[HostSessionView] Failed to create offer for ${listenerId}:`, err);
       }
-    });
+    };
 
-    sock.on("webrtc-answer", async (payload: { from: string; sdp: any }) => {
-      console.log(`[HostSessionView] Received WebRTC answer from listener ${payload.from}`);
-      const pc = peerConnectionsRef.current.get(payload.from);
-      if (pc) {
-        try {
-          await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-          console.log(`[HostSessionView] Remote description set for listener ${payload.from}`);
-        } catch (err) {
-          console.error(`[HostSessionView] Failed to set remote description for ${payload.from}:`, err);
+    const unsubscribe = client.onUpdate(
+      api.signaling.getIncomingSignals,
+      { target: targetId },
+      async (signals) => {
+        for (const sig of signals) {
+          if (sig.type === "ice") {
+            if (sig.from && !peerConnectionsRef.current.has(sig.from)) {
+              await handleListenerJoined(sig.from, "Listener (" + sig.from.slice(0, 4) + ")");
+            }
+            const pc = peerConnectionsRef.current.get(sig.from);
+            if (pc) {
+              try {
+                const candidate = JSON.parse(sig.payload);
+                await pc.addIceCandidate(new RTCIceCandidate(candidate));
+              } catch (err) {
+                console.warn("[HostSessionView] Failed adding ICE candidate:", err);
+              }
+            }
+          } else if (sig.type === "answer") {
+            const pc = peerConnectionsRef.current.get(sig.from);
+            if (pc) {
+              try {
+                const answer = JSON.parse(sig.payload);
+                await pc.setRemoteDescription(new RTCSessionDescription(answer));
+              } catch (err) {
+                console.warn("[HostSessionView] Failed setting remote answer:", err);
+              }
+            }
+          }
+
+          await client.mutation(api.signaling.clearSignal, { id: sig._id });
         }
-      } else {
-        console.warn(`[HostSessionView] No PeerConnection found for answering listener ${payload.from}`);
       }
-    });
-
-    sock.on("ice-candidate", async (payload: { from: string; candidate: any }) => {
-      console.log(`[HostSessionView] Received trickled ICE candidate from listener ${payload.from}:`, payload.candidate);
-      const pc = peerConnectionsRef.current.get(payload.from);
-      if (pc) {
-        try {
-          await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
-          console.log(`[HostSessionView] Added ICE candidate for listener ${payload.from}`);
-        } catch (err) {
-          console.warn(`[HostSessionView] Failed to add ICE candidate from listener ${payload.from}:`, err);
-        }
-      } else {
-        console.warn(`[HostSessionView] No PeerConnection found for candidate from listener ${payload.from}`);
-      }
-    });
-
-    sock.on("listener-left", (payload: { socketId: string }) => {
-      console.log(`[HostSessionView] Listener left: ${payload.socketId}`);
-      setListeners((prev) => {
-        const next = new Map(prev);
-        next.delete(payload.socketId);
-        return next;
-      });
-
-      const pc = peerConnectionsRef.current.get(payload.socketId);
-      if (pc) {
-        pc.close();
-        peerConnectionsRef.current.delete(payload.socketId);
-      }
-    });
+    );
 
     return () => {
-      sock.off("listener-joined");
-      sock.off("webrtc-answer");
-      sock.off("ice-candidate");
-      sock.off("listener-left");
+      unsubscribe();
       peerConnectionsRef.current.forEach((pc) => pc.close());
       peerConnectionsRef.current.clear();
-      sock.disconnect();
     };
   }, [sidecar]);
 

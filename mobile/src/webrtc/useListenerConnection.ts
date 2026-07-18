@@ -1,20 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { io, type Socket } from "socket.io-client";
+import { ConvexClient } from "convex/browser";
 import {
   RTCPeerConnection,
   RTCIceCandidate,
   RTCSessionDescription,
 } from "react-native-webrtc";
-import type {
-  ClientToServerEvents,
-  IceCandidatePayload,
-  JoinSessionError,
-  JoinSessionResult,
-  QrPayload,
-  ServerToClientEvents,
-  SessionEndedEvent,
-  WebRtcOfferPayload,
-} from "@sshare/shared";
+import type { QrPayload } from "@sshare/shared";
+import { api } from "../../../convex/_generated/api";
+
+const PRODUCTION_CONVEX_URL = "https://elated-scorpion-697.convex.cloud";
 
 export type ConnectionState =
   | "idle"
@@ -37,13 +31,13 @@ interface Result {
 }
 
 /**
- * Establishes a signaling channel + WebRTC audio-receive connection to the host.
+ * Establishes a Convex Cloud signaling channel + WebRTC audio-receive connection to the host.
  */
 export function useListenerConnection(opts: Options): Result {
   const [state, setState] = useState<ConnectionState>("idle");
   const [error, setError] = useState<string | null>(null);
-  const socketRef = useRef<Socket<ServerToClientEvents, ClientToServerEvents> | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
+  const clientRef = useRef<ConvexClient | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -52,158 +46,134 @@ export function useListenerConnection(opts: Options): Result {
       setState("connecting");
       if (cancelled) return;
 
-      const url = `${opts.qr.protocol}://${opts.qr.ip}:${opts.qr.port}`;
-      const sock: Socket<ServerToClientEvents, ClientToServerEvents> = io(url, {
-        transports: ["websocket"],
-        reconnection: false,
-      });
-      socketRef.current = sock;
+      const convexUrl = opts.qr.convexUrl || PRODUCTION_CONVEX_URL;
+      const client = new ConvexClient(convexUrl);
+      clientRef.current = client;
 
-      sock.on("connect_error", (err) => {
-        console.error(`[useListenerConnection] Socket connect_error: ${err.message}`);
-        setError(err.message);
-        setState("error");
-      });
+      try {
+        console.log(`[useListenerConnection] Joining session ${opts.qr.code} on Convex Cloud...`);
+        const res = await client.mutation(api.signaling.joinSession, {
+          code: opts.qr.code,
+          passcode: opts.passcode,
+          listenerName: opts.listenerName,
+        });
 
-      sock.on("connect", () => {
-        console.log(`[useListenerConnection] Socket connected. Joining session: ${opts.qr.code}`);
-        sock.emit(
-          "join-session",
-          {
-            sessionCode: opts.qr.code,
-            passcode: opts.passcode,
-            listenerName: opts.listenerName,
-          },
-          (result: JoinSessionResult | JoinSessionError) => {
-            if (!result.ok) {
-              console.error(`[useListenerConnection] Join session rejected: ${result.error}`);
-              setError(`join failed: ${result.error}`);
-              setState("error");
-              return;
+        if (!res.ok) {
+          console.error(`[useListenerConnection] Join session failed: ${res.error}`);
+          setError(`Join failed: ${res.error}`);
+          setState("error");
+          return;
+        }
+
+        const listenerId = res.listenerId;
+        console.log(`[useListenerConnection] Joined session approved. Listener ID: ${listenerId}`);
+        setState("negotiating");
+
+        const peer = new RTCPeerConnection({
+          iceServers: [
+            { urls: "stun:stun.l.google.com:19302" },
+            { urls: "stun:stun1.l.google.com:19302" },
+            { urls: "stun:stun2.l.google.com:19302" },
+          ],
+        });
+        peerRef.current = peer;
+
+        (peer as any).addEventListener("icecandidate", async (event: any) => {
+          if (event.candidate) {
+            console.log(`[useListenerConnection] Sending trickled ICE candidate to Convex Cloud`);
+            await client.mutation(api.signaling.sendSignal, {
+              sessionCode: opts.qr.code,
+              target: "host_" + opts.qr.code,
+              from: listenerId,
+              type: "ice",
+              payload: JSON.stringify(event.candidate.toJSON()),
+            });
+          }
+        });
+
+        (peer as any).addEventListener("connectionstatechange", () => {
+          const cs = peer.connectionState;
+          console.log(`[useListenerConnection] WebRTC connectionState changed: ${cs}`);
+          if (cs === "connected") setState("streaming");
+          if (cs === "failed") {
+            setError("WebRTC connection failed. Check network firewalls.");
+            setState("error");
+          }
+          if (cs === "closed") setState("ended");
+        });
+
+        (peer as any).addEventListener("track", (event: any) => {
+          console.log(`[useListenerConnection] Received remote WebRTC audio track:`, event.track?.id);
+          if (event.track) {
+            event.track.enabled = true;
+          }
+        });
+
+        // Subscribe to signals targeted to this listener
+        const unsubscribe = client.onUpdate(
+          api.signaling.getIncomingSignals,
+          { target: listenerId },
+          async (signals) => {
+            for (const sig of signals) {
+              if (sig.type === "offer") {
+                console.log(`[useListenerConnection] Received WebRTC offer from host`);
+                try {
+                  const sdp = JSON.parse(sig.payload);
+                  await peer.setRemoteDescription(new RTCSessionDescription(sdp));
+                  const answer = await peer.createAnswer();
+                  await peer.setLocalDescription(answer);
+
+                  console.log(`[useListenerConnection] Sending WebRTC answer to host over Convex Cloud`);
+                  await client.mutation(api.signaling.sendSignal, {
+                    sessionCode: opts.qr.code,
+                    target: sig.from,
+                    from: listenerId,
+                    type: "answer",
+                    payload: JSON.stringify(answer),
+                  });
+                } catch (err) {
+                  console.error("[useListenerConnection] Failed handling offer:", err);
+                }
+              } else if (sig.type === "ice") {
+                try {
+                  const candidate = JSON.parse(sig.payload);
+                  await peer.addIceCandidate(new RTCIceCandidate(candidate));
+                } catch (err) {
+                  console.warn("[useListenerConnection] Failed adding ICE candidate:", err);
+                }
+              }
+
+              // Delete processed signal
+              await client.mutation(api.signaling.clearSignal, { id: sig._id });
             }
-            console.log(`[useListenerConnection] Join session approved. Negotiating WebRTC...`);
-            setState("negotiating");
           }
         );
-      });
 
-      sock.on("disconnect", (reason) => {
-        console.warn(`[useListenerConnection] Socket disconnected: ${reason}`);
-      });
-
-      const peer = new RTCPeerConnection({
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" },
-          { urls: "stun:stun1.l.google.com:19302" },
-          { urls: "stun:stun2.l.google.com:19302" },
-        ],
-      });
-      peerRef.current = peer;
-
-      type IceCandidateEvent = {
-        candidate: { toJSON: () => IceCandidatePayload["candidate"] } | null;
-      };
-      (peer as any).addEventListener("icecandidate", (event: IceCandidateEvent) => {
-        const hostSocketId = (sock as unknown as { _hostId?: string })._hostId;
-        if (event.candidate && hostSocketId) {
-          console.log(`[useListenerConnection] Sending trickled local ICE candidate to host:`, event.candidate.toJSON());
-          sock.emit("ice-candidate", {
-            target: hostSocketId,
-            candidate: event.candidate.toJSON(),
-          });
-        }
-      });
-
-      (peer as any).addEventListener("connectionstatechange", () => {
-        const cs = peer.connectionState;
-        console.log(`[useListenerConnection] WebRTC connectionState changed: ${cs}`);
-        if (cs === "connected") setState("streaming");
-        if (cs === "failed") {
-          setError(
-            "WebRTC ICE failed — host is unreachable. Check Wi-Fi is the same network, disable AP Isolation on the router, and allow Node/browser through the Windows firewall."
-          );
+        return () => {
+          unsubscribe();
+        };
+      } catch (err) {
+        if (!cancelled) {
+          console.error(`[useListenerConnection] Setup error:`, err);
+          setError(String(err));
           setState("error");
         }
-        if (cs === "closed") setState("ended");
-      });
-
-      (peer as any).addEventListener("iceconnectionstatechange", () => {
-        console.log(`[useListenerConnection] WebRTC iceConnectionState changed: ${peer.iceConnectionState}`);
-      });
-
-      (peer as any).addEventListener("icegatheringstatechange", () => {
-        console.log(`[useListenerConnection] WebRTC iceGatheringState changed: ${peer.iceGatheringState}`);
-      });
-
-      (peer as any).addEventListener("track", (event: any) => {
-        console.log(
-          `[useListenerConnection] Received remote WebRTC track: kind=${event.track?.kind}, id=${event.track?.id}, readyState=${event.track?.readyState}`
-        );
-        if (event.track) {
-          event.track.enabled = true;
-        }
-      });
-
-      sock.on("webrtc-offer", async (payload: WebRtcOfferPayload & { from: string }) => {
-        console.log(`[useListenerConnection] Received WebRTC offer from host ${payload.from}`);
-        (sock as unknown as { _hostId?: string })._hostId = payload.from;
-        
-        try {
-          await peer.setRemoteDescription(
-            new RTCSessionDescription({
-              type: payload.sdp.type,
-              sdp: payload.sdp.sdp ?? "",
-            })
-          );
-          console.log(`[useListenerConnection] Remote description set successfully.`);
-          
-          const answer = await peer.createAnswer();
-          await peer.setLocalDescription(answer);
-          console.log(`[useListenerConnection] Local answer created and set. Sending answer to host...`);
-          sock.emit("webrtc-answer", { target: payload.from, sdp: answer });
-        } catch (err) {
-          console.error(`[useListenerConnection] Failed handling offer:`, err);
-          setError(`WebRTC negotiation failed: ${err}`);
-          setState("error");
-        }
-      });
-
-      sock.on("ice-candidate", async (payload) => {
-        console.log(`[useListenerConnection] Received trickled ICE candidate from host:`, payload.candidate);
-        try {
-          await peer.addIceCandidate(new RTCIceCandidate(payload.candidate));
-        } catch (err) {
-          console.warn("[useListenerConnection] Failed to add ICE candidate", err);
-        }
-      });
-
-      sock.on("session-ended", (ev: SessionEndedEvent) => {
-        console.warn(`[useListenerConnection] Session ended by server. Reason: ${ev.reason}`);
-        setState("ended");
-      });
-    })().catch((err) => {
-      if (!cancelled) {
-        console.error(`[useListenerConnection] Fatal setup error:`, err);
-        setError(String(err));
-        setState("error");
       }
-    });
+    })();
 
     return () => {
       cancelled = true;
-      socketRef.current?.disconnect();
-      socketRef.current = null;
       peerRef.current?.close();
       peerRef.current = null;
+      clientRef.current?.close();
+      clientRef.current = null;
     };
   }, [opts.qr, opts.passcode, opts.listenerName]);
 
   const close = (): void => {
-    socketRef.current?.emit("leave-session");
-    socketRef.current?.disconnect();
     peerRef.current?.close();
+    clientRef.current?.close();
   };
 
   return { state, error, close };
 }
-
