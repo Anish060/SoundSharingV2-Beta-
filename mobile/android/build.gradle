@@ -43,3 +43,17 @@ allprojects {
         maven { url 'https://www.jitpack.io' }
     }
 }
+
+subprojects { project ->
+    project.plugins.withId("kotlin-kapt") {
+        project.kapt {
+            arguments {
+                arg("room.schemaLocation", "${project.buildDir}/schemas".toString())
+            }
+            javacOptions {
+                option("-Dorg.sqlite.tmpdir", "${project.buildDir}/tmp/sqlite".toString())
+                option("-Djava.io.tmpdir", "${project.buildDir}/tmp".toString())
+            }
+        }
+    }
+}

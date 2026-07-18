@@ -52,8 +52,7 @@ export function useListenerConnection(opts: Options): Result {
       setState("connecting");
       if (cancelled) return;
 
-      const scheme = opts.qr.protocol === "wss" ? "https" : "http";
-      const url = `${scheme}://${opts.qr.ip}:${opts.qr.port}`;
+      const url = `${opts.qr.protocol}://${opts.qr.ip}:${opts.qr.port}`;
       const sock: Socket<ServerToClientEvents, ClientToServerEvents> = io(url, {
         transports: ["websocket"],
         reconnection: false,

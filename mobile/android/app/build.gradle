@@ -1,3 +1,6 @@
+System.setProperty("org.sqlite.tmpdir", "${buildDir}/tmp/sqlite")
+System.setProperty("java.io.tmpdir", "${buildDir}/tmp")
+
 apply plugin: "com.android.application"
 apply plugin: "org.jetbrains.kotlin.android"
 apply plugin: "com.facebook.react"
