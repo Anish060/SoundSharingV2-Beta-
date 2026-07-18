@@ -19,7 +19,8 @@
         "NSCameraUsageDescription": "Used to scan session QR codes.",
         "NSLocalNetworkUsageDescription": "SShare needs local network access to connect to a host on your Wi-Fi.",
         "NSMicrophoneUsageDescription": "Required by react-native-webrtc; not actively used on the listener."
-      }
+      },
+      "bitcode": false
     },
     "android": {
       "package": "com.sshare.listener",
@@ -28,7 +29,15 @@
         "INTERNET",
         "ACCESS_NETWORK_STATE",
         "MODIFY_AUDIO_SETTINGS",
-        "RECORD_AUDIO"
+        "RECORD_AUDIO",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.CAMERA",
+        "android.permission.INTERNET",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.WAKE_LOCK",
+        "android.permission.BLUETOOTH"
       ]
     },
     "plugins": [
@@ -39,6 +48,12 @@
           "microphonePermission": "Required by react-native-webrtc runtime."
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "614c95c4-f011-461a-8001-d864475fa919"
+      }
+    },
+    "owner": "anish0607"
   }
 }
