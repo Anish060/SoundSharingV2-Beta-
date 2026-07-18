@@ -1,0 +1,24 @@
+{
+  "name": "sshare",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Wi-Fi-based local audio broadcasting platform",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "dev:backend": "pnpm --filter @sshare/backend dev",
+    "dev:desktop": "pnpm --filter @sshare/desktop tauri:dev",
+    "dev:mobile": "pnpm --filter @sshare/mobile start",
+    "mobile:build": "pnpm --filter @sshare/mobile eas:build:dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "SShare",
+    "slug": "sshare",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": false,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.sshare.listener",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Used to scan session QR codes.",
+        "NSLocalNetworkUsageDescription": "SShare needs local network access to connect to a host on your Wi-Fi.",
+        "NSMicrophoneUsageDescription": "Required by react-native-webrtc; not actively used on the listener."
+      }
+    },
+    "android": {
+      "package": "com.sshare.listener",
+      "permissions": [
+        "CAMERA",
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "MODIFY_AUDIO_SETTINGS",
+        "RECORD_AUDIO"
+      ]
+    },
+    "plugins": [
+      [
+        "@config-plugins/react-native-webrtc",
+        {
+          "cameraPermission": "SShare uses the camera to scan session QR codes.",
+          "microphonePermission": "Required by react-native-webrtc runtime."
+        }
+      ]
+    ]
+  }
+}
