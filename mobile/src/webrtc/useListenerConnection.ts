@@ -70,6 +70,15 @@ export function useListenerConnection(opts: Options): Result {
         console.log(`[useListenerConnection] Joined session approved. Listener ID: ${listenerId}`);
         setState("negotiating");
 
+        // Send initial join signal to trigger host WebRTC offer creation
+        await client.mutation(api.signaling.sendSignal, {
+          sessionCode: opts.qr.code,
+          target: "host_" + opts.qr.code,
+          from: listenerId,
+          type: "join",
+          payload: JSON.stringify({ name: opts.listenerName }),
+        });
+
         const peer = new RTCPeerConnection({
           iceServers: [
             { urls: "stun:stun.l.google.com:19302" },

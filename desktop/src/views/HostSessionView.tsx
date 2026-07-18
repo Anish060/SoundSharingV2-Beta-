@@ -154,17 +154,24 @@ export function HostSessionView({ hostName }: Props): JSX.Element {
       { target: targetId },
       async (signals) => {
         for (const sig of signals) {
-          if (sig.type === "ice") {
+          if (sig.type === "join" || sig.type === "ice") {
             if (sig.from && !peerConnectionsRef.current.has(sig.from)) {
-              await handleListenerJoined(sig.from, "Listener (" + sig.from.slice(0, 4) + ")");
-            }
-            const pc = peerConnectionsRef.current.get(sig.from);
-            if (pc) {
+              let listenerName = "Listener (" + sig.from.slice(0, 4) + ")";
               try {
-                const candidate = JSON.parse(sig.payload);
-                await pc.addIceCandidate(new RTCIceCandidate(candidate));
-              } catch (err) {
-                console.warn("[HostSessionView] Failed adding ICE candidate:", err);
+                const parsed = JSON.parse(sig.payload);
+                if (parsed.name) listenerName = parsed.name;
+              } catch {}
+              await handleListenerJoined(sig.from, listenerName);
+            }
+            if (sig.type === "ice") {
+              const pc = peerConnectionsRef.current.get(sig.from);
+              if (pc) {
+                try {
+                  const candidate = JSON.parse(sig.payload);
+                  await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                } catch (err) {
+                  console.warn("[HostSessionView] Failed adding ICE candidate:", err);
+                }
               }
             }
           } else if (sig.type === "answer") {
