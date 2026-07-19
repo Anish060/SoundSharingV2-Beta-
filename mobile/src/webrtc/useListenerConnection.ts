@@ -52,16 +52,37 @@ export function useListenerConnection(opts: Options): Result {
       setState("connecting");
       if (cancelled) return;
 
-      const url = `${opts.qr.protocol}://${opts.qr.ip}:${opts.qr.port}`;
+      // Normalise ws/wss to http/https because Socket.IO's polling handshake
+      // uses HTTP. Use the Socket.IO default transport order (polling first,
+      // upgrade to WebSocket on success). On cellular networks that block
+      // the Upgrade handshake this stays on polling and still works.
+      const scheme = opts.qr.protocol ?? "ws";
+      const url = `${scheme}://${opts.qr.ip}:${opts.qr.port}`;
+      console.log(`[useListenerConnection] Connecting to ${url}`);
       const sock: Socket<ServerToClientEvents, ClientToServerEvents> = io(url, {
-        transports: ["websocket"],
+        transports: ["websocket", "polling"],
         reconnection: false,
+        timeout: 15_000,
+        forceNew: true,
       });
       socketRef.current = sock;
 
       sock.on("connect_error", (err) => {
-        console.error(`[useListenerConnection] Socket connect_error: ${err.message}`);
-        setError(err.message);
+        const anyErr = err as Error & {
+          type?: string;
+          description?: unknown;
+          context?: unknown;
+        };
+        const details = [
+          `message: ${anyErr.message}`,
+          anyErr.type ? `type: ${anyErr.type}` : null,
+          anyErr.description ? `description: ${JSON.stringify(anyErr.description)}` : null,
+          anyErr.context ? `context: ${JSON.stringify(anyErr.context)}` : null,
+        ]
+          .filter(Boolean)
+          .join(" | ");
+        console.error(`[useListenerConnection] Socket connect_error: ${details}`);
+        setError(details || anyErr.message);
         setState("error");
       });
 
@@ -91,7 +112,26 @@ export function useListenerConnection(opts: Options): Result {
         console.warn(`[useListenerConnection] Socket disconnected: ${reason}`);
       });
 
-      const peer = new RTCPeerConnection({ iceServers: [] });
+      // STUN first for NAT discovery; TURN as a relay fallback when direct
+      // UDP fails (mobile hotspots with client isolation, CGNAT, symmetric
+      // NATs). Open Relay Project is free/public — fine for testing, swap
+      // to a paid provider or self-hosted coturn for production.
+      const peer = new RTCPeerConnection({
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun.cloudflare.com:3478" },
+          {
+            urls: [
+              "turn:openrelay.metered.ca:80",
+              "turn:openrelay.metered.ca:443",
+              "turn:openrelay.metered.ca:443?transport=tcp",
+            ],
+            username: "openrelayproject",
+            credential: "openrelayproject",
+          },
+        ],
+        iceTransportPolicy: "all",
+      });
       peerRef.current = peer;
 
       type IceCandidateEvent = {

@@ -1,14 +1,16 @@
-import type { LeaveReason, Listener, SessionInfo } from "./session";
+import type { LeaveReason, Listener, SessionInfo, TransportMode } from "./session";
 
 export interface CreateSessionPayload {
   hostName: string;
   passcode: string;
+  transportMode?: TransportMode;
 }
 
 export interface CreateSessionResult {
   sessionCode: string;
   hostSocketId: string;
   ips?: string[];
+  transportMode: TransportMode;
 }
 
 export interface JoinSessionPayload {
@@ -19,8 +21,32 @@ export interface JoinSessionPayload {
 
 export interface JoinSessionResult {
   ok: true;
-  session: Pick<SessionInfo, "sessionCode" | "hostName">;
+  session: Pick<SessionInfo, "sessionCode" | "hostName" | "transportMode">;
   hostSocketId: string;
+}
+
+/**
+ * WebSocket-transport audio chunk. Sent host → server → all listeners in the
+ * session. `data` is base64-encoded (socket.io-client cross-platform quirk).
+ *
+ * Prefer `audio/wav` for chunks — each WAV is a self-contained playable file
+ * so listeners can decode chunk-by-chunk without a running stream demuxer.
+ * webm/opus chunks are only usable when the listener holds a full MediaSource
+ * with the initial header cluster.
+ */
+export interface AudioChunkPayload {
+  /** Base64-encoded audio data. */
+  data: string;
+  /** Chunk mime type — receiver uses this to pick a decoder path. */
+  mimeType: "audio/wav" | "audio/webm;codecs=opus" | "audio/pcm";
+  /** PCM sample rate. */
+  sampleRate?: number;
+  /** Number of channels. */
+  channels?: number;
+  /** Monotonic sequence number for reorder/dedupe. */
+  seq: number;
+  /** Host wall-clock timestamp in ms — for future jitter tuning. */
+  ts: number;
 }
 
 export interface JoinSessionError {
@@ -89,6 +115,7 @@ export interface ClientToServerEvents {
   "session-ended": (payload: SessionEndedEvent) => void;
   "host-ip-changed": (payload: HostIpChangedEvent) => void;
   "leave-session": () => void;
+  "audio-chunk": (payload: AudioChunkPayload) => void;
 }
 
 export interface ServerToClientEvents {
@@ -99,6 +126,7 @@ export interface ServerToClientEvents {
   "ice-candidate": (payload: IceCandidatePayload & { from: string }) => void;
   "session-ended": (payload: SessionEndedEvent) => void;
   "host-ip-changed": (payload: HostIpChangedEvent) => void;
+  "audio-chunk": (payload: AudioChunkPayload) => void;
 }
 
 export interface SocketData {

@@ -1,3 +1,5 @@
+import { DEFAULT_TRANSPORT_MODE, type TransportMode } from "./session";
+
 export const QR_SCHEMA_VERSION = 1;
 
 export interface QrPayloadV1 {
@@ -7,6 +9,8 @@ export interface QrPayloadV1 {
   code: string;
   protocol: "ws" | "wss";
   requiresPasscode: boolean;
+  /** Which transport carries the audio. Optional for backwards compat; older QRs default to "webrtc". */
+  transportMode?: TransportMode;
 }
 
 export type QrPayload = QrPayloadV1;
@@ -44,6 +48,11 @@ export function decodeQr(raw: string): QrPayload {
     throw new Error("QR payload is missing required fields");
   }
 
+  const transportMode: TransportMode =
+    obj.transportMode === "websocket" || obj.transportMode === "webrtc"
+      ? obj.transportMode
+      : DEFAULT_TRANSPORT_MODE;
+
   return {
     v: 1,
     ip: obj.ip,
@@ -51,5 +60,6 @@ export function decodeQr(raw: string): QrPayload {
     code: obj.code,
     protocol: obj.protocol,
     requiresPasscode: obj.requiresPasscode,
+    transportMode,
   };
 }

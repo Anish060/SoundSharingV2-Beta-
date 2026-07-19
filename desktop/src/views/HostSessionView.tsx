@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useState, useRef } from "react";
 import QRCode from "qrcode";
-import { encodeQr, type QrPayload } from "@sshare/shared";
+import { encodeQr, type QrPayload, type TransportMode } from "@sshare/shared";
 import { startSignalingSidecar, type SidecarInfo } from "../sidecar.js";
 import { useHostAudio } from "../useHostAudio.js";
+import { useWebSocketAudioSender } from "../useWebSocketAudioSender.js";
 
 interface Props {
   hostName: string;
+  transportMode: TransportMode;
 }
 
-export function HostSessionView({ hostName }: Props): JSX.Element {
+export function HostSessionView({ hostName, transportMode }: Props): JSX.Element {
   const [sidecar, setSidecar] = useState<SidecarInfo | null>(null);
   const [passcode] = useState(() => generatePasscode());
   const [error, setError] = useState<string | null>(null);
@@ -63,7 +65,7 @@ export function HostSessionView({ hostName }: Props): JSX.Element {
   // Start sidecar and session
   useEffect(() => {
     let cancelled = false;
-    startSignalingSidecar({ hostName, passcode })
+    startSignalingSidecar({ hostName, passcode, transportMode })
       .then((info) => {
         if (cancelled) return;
         setSidecar(info);
@@ -75,7 +77,14 @@ export function HostSessionView({ hostName }: Props): JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [hostName, passcode]);
+  }, [hostName, passcode, transportMode]);
+
+  // WebSocket-transport audio streaming (active only when transportMode === "websocket").
+  useWebSocketAudioSender({
+    socket: sidecar?.socket ?? null,
+    audioTrack,
+    enabled: transportMode === "websocket" && isCapturing,
+  });
 
   // Setup Socket.IO listeners once sidecar socket is available
   useEffect(() => {
@@ -91,9 +100,32 @@ export function HostSessionView({ hostName }: Props): JSX.Element {
         return next;
       });
 
-      // 1. Create peer connection
+      // In WebSocket-relay mode the listener just consumes audio-chunk events;
+      // no PeerConnection is needed.
+      if (transportMode === "websocket") {
+        console.log(`[HostSessionView] websocket transport: no PeerConnection for ${payload.socketId}`);
+        return;
+      }
+
+      // 1. Create peer connection with STUN + TURN. Matches the listener's
+      // config; TURN kicks in when direct UDP between peers isn't possible.
       console.log(`[HostSessionView] Creating RTCPeerConnection for listener ${payload.socketId}`);
-      const pc = new RTCPeerConnection({ iceServers: [] });
+      const pc = new RTCPeerConnection({
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun.cloudflare.com:3478" },
+          {
+            urls: [
+              "turn:openrelay.metered.ca:80",
+              "turn:openrelay.metered.ca:443",
+              "turn:openrelay.metered.ca:443?transport=tcp",
+            ],
+            username: "openrelayproject",
+            credential: "openrelayproject",
+          },
+        ],
+        iceTransportPolicy: "all",
+      });
       peerConnectionsRef.current.set(payload.socketId, pc);
 
       pc.onconnectionstatechange = () => {
@@ -211,7 +243,7 @@ export function HostSessionView({ hostName }: Props): JSX.Element {
       peerConnectionsRef.current.clear();
       sock.disconnect();
     };
-  }, [sidecar]);
+  }, [sidecar, transportMode]);
 
   // Handle hot-swapping or toggling of audio tracks across all active listeners
   useEffect(() => {
@@ -250,8 +282,9 @@ export function HostSessionView({ hostName }: Props): JSX.Element {
       code: sessionCode,
       protocol: "ws",
       requiresPasscode: true,
+      transportMode,
     };
-  }, [sidecar, sessionCode, activeIp]);
+  }, [sidecar, sessionCode, activeIp, transportMode]);
 
   useEffect(() => {
     if (!qrPayload) return;
@@ -331,6 +364,10 @@ export function HostSessionView({ hostName }: Props): JSX.Element {
             activeIp || "…"
           )}
           {sidecar ? ` : ${sidecar.port}` : ""}
+        </dd>
+        <dt>Transport</dt>
+        <dd>
+          {transportMode === "webrtc" ? "WebRTC (direct P2P)" : "WebSocket (server relay)"}
         </dd>
       </dl>
 

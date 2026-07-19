@@ -1,0 +1,9 @@
+# EAS Build runs on Linux — regenerate the native project on the server
+# instead of shipping our Windows-specific android/ folder (which contains
+# absolute C:\ paths in gradle.properties and other host-specific hacks).
+android/
+ios/
+
+# Local dev artifacts that shouldn't upload
+.expo/
+node_modules/

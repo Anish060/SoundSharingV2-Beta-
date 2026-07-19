@@ -103,3 +103,44 @@ button.primary:disabled {
   border-radius: 6px;
   white-space: pre-wrap;
 }
+
+.transport-fieldset {
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 0.75rem 1rem 1rem;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.transport-fieldset legend {
+  color: #94a3b8;
+  padding: 0 0.35rem;
+  font-size: 0.9rem;
+}
+
+.radio-row {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 0.65rem;
+  cursor: pointer;
+}
+
+.radio-row input[type="radio"] {
+  width: auto;
+  padding: 0;
+  margin: 0.35rem 0 0;
+  accent-color: #38bdf8;
+}
+
+.radio-row span {
+  font-size: 0.9rem;
+  color: #cbd5e1;
+  line-height: 1.35;
+}
+
+.radio-row strong {
+  color: #e2e8f0;
+}

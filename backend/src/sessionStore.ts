@@ -1,8 +1,10 @@
 import { randomBytes } from "node:crypto";
 import {
+  DEFAULT_TRANSPORT_MODE,
   SESSION_CODE_PREFIX,
   type Listener,
   type SessionInfo,
+  type TransportMode,
 } from "@sshare/shared";
 
 export interface StoredSession extends SessionInfo {
@@ -15,7 +17,12 @@ export class SessionStore {
   private readonly byHostSocket = new Map<string, string>();
   private readonly bySocket = new Map<string, string>();
 
-  create(params: { hostSocketId: string; hostName: string; passcode: string }): StoredSession {
+  create(params: {
+    hostSocketId: string;
+    hostName: string;
+    passcode: string;
+    transportMode?: TransportMode;
+  }): StoredSession {
     const sessionCode = this.generateCode();
     const session: StoredSession = {
       sessionCode,
@@ -23,6 +30,7 @@ export class SessionStore {
       hostName: params.hostName,
       passcode: params.passcode,
       createdAt: Date.now(),
+      transportMode: params.transportMode ?? DEFAULT_TRANSPORT_MODE,
       listeners: new Map(),
     };
     this.byCode.set(sessionCode, session);

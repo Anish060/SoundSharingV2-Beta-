@@ -1,18 +1,21 @@
 import type { Server, Socket } from "socket.io";
-import type {
-  ClientToServerEvents,
-  CreateSessionPayload,
-  CreateSessionResult,
-  HostIpChangedEvent,
-  IceCandidatePayload,
-  JoinSessionError,
-  JoinSessionPayload,
-  JoinSessionResult,
-  ServerToClientEvents,
-  SessionEndedEvent,
-  SocketData,
-  WebRtcAnswerPayload,
-  WebRtcOfferPayload,
+import {
+  DEFAULT_TRANSPORT_MODE,
+  type AudioChunkPayload,
+  type ClientToServerEvents,
+  type CreateSessionPayload,
+  type CreateSessionResult,
+  type HostIpChangedEvent,
+  type IceCandidatePayload,
+  type JoinSessionError,
+  type JoinSessionPayload,
+  type JoinSessionResult,
+  type ServerToClientEvents,
+  type SessionEndedEvent,
+  type SocketData,
+  type TransportMode,
+  type WebRtcAnswerPayload,
+  type WebRtcOfferPayload,
 } from "@sshare/shared";
 import type { Logger } from "./logger.js";
 import type { TokenBucket } from "./rateLimit.js";
@@ -68,6 +71,10 @@ function bindSocket(socket: SIOSocket, deps: SignalingDeps): void {
     handleHostIpChanged(socket, payload, deps);
   });
 
+  socket.on("audio-chunk", (payload) => {
+    relayAudioChunk(socket, payload, deps);
+  });
+
   socket.on("leave-session", () => {
     handleDisconnect(socket, "explicit", deps);
     socket.disconnect(true);
@@ -93,18 +100,32 @@ function handleCreateSession(
     deps.log.warn("create-session rejected: malformed payload", { id: socket.id });
     return;
   }
+  const transportMode: TransportMode =
+    payload.transportMode === "websocket" || payload.transportMode === "webrtc"
+      ? payload.transportMode
+      : DEFAULT_TRANSPORT_MODE;
   const session = deps.sessions.create({
     hostSocketId: socket.id,
     hostName: payload.hostName.slice(0, 64),
     passcode: payload.passcode,
+    transportMode,
   });
   socket.data.role = "host";
   socket.data.sessionCode = session.sessionCode;
   socket.data.hostName = session.hostName;
   void socket.join(session.sessionCode);
-  deps.log.info("session created", { code: session.sessionCode, host: socket.id });
+  deps.log.info("session created", {
+    code: session.sessionCode,
+    host: socket.id,
+    transportMode,
+  });
   const ips = deps.discoverLocalIps();
-  ack({ sessionCode: session.sessionCode, hostSocketId: socket.id, ips });
+  ack({
+    sessionCode: session.sessionCode,
+    hostSocketId: socket.id,
+    ips,
+    transportMode,
+  });
 }
 
 function handleJoinSession(
@@ -162,9 +183,27 @@ function handleJoinSession(
   deps.log.info("listener joined", { code: session.sessionCode, socket: socket.id });
   ack({
     ok: true,
-    session: { sessionCode: session.sessionCode, hostName: session.hostName },
+    session: {
+      sessionCode: session.sessionCode,
+      hostName: session.hostName,
+      transportMode: session.transportMode,
+    },
     hostSocketId: session.hostSocketId,
   });
+}
+
+function relayAudioChunk(
+  socket: SIOSocket,
+  payload: AudioChunkPayload,
+  deps: SignalingDeps
+): void {
+  if (!deps.sessions.isHostSocket(socket.id)) return;
+  const code = socket.data.sessionCode;
+  if (!code) return;
+  const session = deps.sessions.get(code);
+  if (!session || session.transportMode !== "websocket") return;
+  // Emit to every listener in the room, but not back to the host.
+  deps.io.to(code).except(socket.id).emit("audio-chunk", payload);
 }
 
 function relayOffer(socket: SIOSocket, payload: WebRtcOfferPayload, deps: SignalingDeps): void {

@@ -1,3 +1,4 @@
+import { createSocket } from "node:dgram";
 import { createServer, type Server as HttpServer } from "node:http";
 import { networkInterfaces } from "node:os";
 import express from "express";
@@ -44,6 +45,11 @@ async function startServerWith(config: Config, log: Logger): Promise<StartedServ
     pingTimeout: 20_000,
   });
 
+  // Detect the routable LAN IP once at startup so signaling can advertise it
+  // ahead of any Docker/WSL/Hyper-V virtual interfaces.
+  const primaryIp = await pickPrimaryIp();
+  if (primaryIp) log.info("primary routable interface", { ip: primaryIp });
+
   const sessions = new SessionStore();
   const joinLimiter = new TokenBucket(config.joinRateLimitPerMinute);
   attachSignaling({
@@ -52,7 +58,7 @@ async function startServerWith(config: Config, log: Logger): Promise<StartedServ
     joinLimiter,
     maxListenersPerSession: config.maxListenersPerSession,
     log,
-    discoverLocalIps,
+    discoverLocalIps: () => discoverLocalIps(primaryIp),
   });
 
   const gcTimer = setInterval(() => joinLimiter.gc(), 60_000);
@@ -70,7 +76,7 @@ async function startServerWith(config: Config, log: Logger): Promise<StartedServ
   const boundPort =
     typeof addr === "object" && addr && "port" in addr ? addr.port : config.port;
 
-  const ifaceIps = discoverLocalIps();
+  const ifaceIps = discoverLocalIps(primaryIp);
   log.info(`SShare signaling listening`, {
     host: config.host,
     port: boundPort,
@@ -86,7 +92,7 @@ async function startServerWith(config: Config, log: Logger): Promise<StartedServ
   return { http, io, address: { host: config.host, port: boundPort }, close };
 }
 
-export function discoverLocalIps(): string[] {
+export function discoverLocalIps(primaryIp: string | null = null): string[] {
   const results: string[] = [];
   const ifaces = networkInterfaces();
   for (const name of Object.keys(ifaces)) {
@@ -95,7 +101,54 @@ export function discoverLocalIps(): string[] {
       results.push(info.address);
     }
   }
-  return results;
+  if (primaryIp && results.includes(primaryIp)) {
+    return [primaryIp, ...results.filter((ip) => ip !== primaryIp)];
+  }
+  return results.sort(compareByRoutability);
+}
+
+// Prefer 192.168.x.x, then 10.x.x.x, deprioritise 172.16-31.x.x (Docker/WSL/Hyper-V default).
+function compareByRoutability(a: string, b: string): number {
+  return scoreIp(b) - scoreIp(a);
+}
+
+function scoreIp(ip: string): number {
+  if (ip.startsWith("192.168.")) return 100;
+  if (ip.startsWith("10.")) return 80;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return 20;
+  return 50;
+}
+
+// Ask the OS which interface it would use to reach the public internet.
+// dgram.connect on UDP doesn't send anything; it just fixes the local address.
+export function pickPrimaryIp(): Promise<string | null> {
+  return new Promise((resolve) => {
+    const sock = createSocket("udp4");
+    let settled = false;
+    const done = (value: string | null): void => {
+      if (settled) return;
+      settled = true;
+      try {
+        sock.close();
+      } catch {
+        // ignore
+      }
+      resolve(value);
+    };
+    sock.once("error", () => done(null));
+    try {
+      sock.connect(80, "8.8.8.8", () => {
+        try {
+          const addr = sock.address();
+          done(addr?.address ?? null);
+        } catch {
+          done(null);
+        }
+      });
+    } catch {
+      done(null);
+    }
+  });
 }
 
 const isDirectRun =

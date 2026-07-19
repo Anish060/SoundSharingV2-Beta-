@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeQr, encodeQr, QR_SCHEMA_VERSION, type QrPayload } from "../src/qr.js";
+import { decodeQr, encodeQr, QR_SCHEMA_VERSION, type QrPayload } from "../src/qr";
 
 describe("qr schema", () => {
   const sample: QrPayload = {
@@ -9,10 +9,28 @@ describe("qr schema", () => {
     code: "SS-8742",
     protocol: "ws",
     requiresPasscode: true,
+    transportMode: "webrtc",
   };
 
   it("round-trips a valid payload", () => {
     expect(decodeQr(encodeQr(sample))).toEqual(sample);
+  });
+
+  it("round-trips a websocket-transport payload", () => {
+    const wsSample: QrPayload = { ...sample, transportMode: "websocket" };
+    expect(decodeQr(encodeQr(wsSample))).toEqual(wsSample);
+  });
+
+  it("defaults to webrtc when transportMode is missing (backwards compat)", () => {
+    const legacy = JSON.stringify({
+      v: 1,
+      ip: sample.ip,
+      port: sample.port,
+      code: sample.code,
+      protocol: sample.protocol,
+      requiresPasscode: sample.requiresPasscode,
+    });
+    expect(decodeQr(legacy).transportMode).toBe("webrtc");
   });
 
   it("rejects unknown schema version", () => {

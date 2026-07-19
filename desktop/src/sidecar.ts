@@ -1,3 +1,5 @@
+import type { TransportMode } from "@sshare/shared";
+
 export interface SidecarInfo {
   ip: string;
   port: number;
@@ -5,11 +7,13 @@ export interface SidecarInfo {
   hostSocketId: string;
   socket: any;
   ips?: string[];
+  transportMode: TransportMode;
 }
 
 export interface StartSidecarOptions {
   hostName: string;
   passcode: string;
+  transportMode: TransportMode;
 }
 
 /**
@@ -24,7 +28,15 @@ export async function startSignalingSidecar(opts: StartSidecarOptions): Promise<
       const started = (await invoke("spawn_signaling_sidecar")) as { ip: string; port: number };
       const { socket, ...result } = await createSessionOnServer(started.ip, started.port, opts);
       const ip = result.ips?.[0] ?? started.ip;
-      return { ip, port: started.port, sessionCode: result.sessionCode, hostSocketId: result.hostSocketId, socket, ips: result.ips };
+      return {
+        ip,
+        port: started.port,
+        sessionCode: result.sessionCode,
+        hostSocketId: result.hostSocketId,
+        socket,
+        ips: result.ips,
+        transportMode: result.transportMode,
+      };
     } catch (err) {
       console.warn("Tauri sidecar spawn failed; falling back to standalone backend on port 3000:", err);
     }
@@ -34,22 +46,39 @@ export async function startSignalingSidecar(opts: StartSidecarOptions): Promise<
   const devIp = "127.0.0.1";
   const { socket, ...result } = await createSessionOnServer(devIp, devPort, opts);
   const ip = result.ips?.[0] ?? devIp;
-  return { ip, port: devPort, sessionCode: result.sessionCode, hostSocketId: result.hostSocketId, socket, ips: result.ips };
+  return {
+    ip,
+    port: devPort,
+    sessionCode: result.sessionCode,
+    hostSocketId: result.hostSocketId,
+    socket,
+    ips: result.ips,
+    transportMode: result.transportMode,
+  };
 }
 
 function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+interface CreateSessionServerResult {
+  sessionCode: string;
+  hostSocketId: string;
+  ips?: string[];
+  transportMode: TransportMode;
+  socket: any;
+}
+
 async function createSessionOnServer(
   ip: string,
   port: number,
   opts: StartSidecarOptions
-): Promise<{ sessionCode: string; hostSocketId: string; ips?: string[]; socket: any }> {
+): Promise<CreateSessionServerResult> {
   const { io } = await import("socket.io-client");
   return new Promise((resolve, reject) => {
     const sock = io(`http://${ip}:${port}`, {
-      transports: ["websocket"],
+      transports: ["polling", "websocket"],
+      upgrade: true,
       reconnection: false,
     });
     const cleanup = (): void => {
@@ -63,8 +92,17 @@ async function createSessionOnServer(
     sock.once("connect", () => {
       sock.emit(
         "create-session",
-        { hostName: opts.hostName, passcode: opts.passcode },
-        (result: { sessionCode: string; hostSocketId: string; ips?: string[] }) => {
+        {
+          hostName: opts.hostName,
+          passcode: opts.passcode,
+          transportMode: opts.transportMode,
+        },
+        (result: {
+          sessionCode: string;
+          hostSocketId: string;
+          ips?: string[];
+          transportMode: TransportMode;
+        }) => {
           cleanup();
           resolve({ ...result, socket: sock });
         }
