@@ -60,7 +60,8 @@ export function useListenerConnection(opts: Options): Result {
       const url = `${scheme}://${opts.qr.ip}:${opts.qr.port}`;
       console.log(`[useListenerConnection] Connecting to ${url}`);
       const sock: Socket<ServerToClientEvents, ClientToServerEvents> = io(url, {
-        transports: ["websocket", "polling"],
+        transports: ["websocket"],
+        upgrade: false,
         reconnection: false,
         timeout: 15_000,
         forceNew: true,

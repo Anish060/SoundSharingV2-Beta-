@@ -68,12 +68,11 @@ export function useWebSocketListener(opts: Options): Result {
 
       if (cancelled) return;
 
-      const scheme = opts.qr.protocol === "wss" ? "https" : "http";
+      const scheme = opts.qr.protocol ?? "ws";
       const url = `${scheme}://${opts.qr.ip}:${opts.qr.port}`;
       console.log(`[useWebSocketListener] Connecting to ${url}`);
       const sock: Socket<ServerToClientEvents, ClientToServerEvents> = io(url, {
-        transports: ["polling", "websocket"],
-        upgrade: true,
+        transports: ["websocket", "polling"],
         reconnection: false,
         timeout: 15_000,
         forceNew: true,
